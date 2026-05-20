@@ -90,6 +90,7 @@ body::after{
   position:sticky;top:0;z-index:100;
   gap:10px;flex-wrap:wrap;
 }
+.header.hidden{display:none;}
 .logo{
   font-family:'Playfair Display',serif;
   font-size:20px;font-weight:900;
@@ -914,12 +915,20 @@ table.mt tbody tr:hover td{background:rgba(240,192,96,.03);}
 .cc-check.checked{background:var(--teal);border-color:var(--teal);}
 
 .hub-btn{
-  font-size:11px;padding:4px 10px;border-radius:20px;
-  background:var(--bg3);border:1px solid var(--bdr2);
-  color:var(--text2);cursor:pointer;transition:all .15s;
-  white-space:nowrap;flex-shrink:0;
+  font-size:13px;font-weight:700;padding:8px 16px;border-radius:20px;
+  background:linear-gradient(135deg,var(--gold),#a06800);
+  border:none;color:#fff;cursor:pointer;
+  transition:all .18s;white-space:nowrap;flex-shrink:0;
+  box-shadow:0 2px 8px rgba(200,150,10,.3);
+  letter-spacing:.03em;
+  display:inline-flex;align-items:center;gap:6px;
 }
-.hub-btn:hover{background:var(--gold);color:#fff;border-color:var(--gold);}
+.hub-btn:hover{
+  background:linear-gradient(135deg,#d4a020,#b87a00);
+  box-shadow:0 4px 16px rgba(200,150,10,.45);
+  transform:translateY(-1px);
+}
+.hub-btn:active{transform:translateY(0);}
 
 /* Scrollbar */
 ::-webkit-scrollbar{width:6px;height:6px;}
@@ -993,7 +1002,7 @@ table.mt tbody tr:hover td{background:rgba(240,192,96,.03);}
     <div class="tbl-section">
       <div class="tbl-head">
         <div class="tbl-title">Stake Scoreboard</div>
-        <button class="btn btn-sm hub-btn" onclick="skGoBack()" title="Back to Game Hub">⌂ Hub</button>
+        <button class="hub-btn" onclick="skGoBack()" title="Back to Game Hub"> ⌂ Hub</button>
         <div class="legend">
           <div class="leg"><div class="leg-dot" style="background:var(--green)"></div>Rummy (0)</div>
           <div class="leg"><div class="leg-dot" style="background:var(--text3)"></div>Drop</div>
@@ -1019,7 +1028,7 @@ table.mt tbody tr:hover td{background:rgba(240,192,96,.03);}
 <div id="scr-stake-setup" class="screen">
   <div class="setup-wrap">
     <div class="setup-hero" style="position:relative">
-      <button class="btn btn-sm hub-btn" onclick="document.getElementById('mod-gamemode').classList.add('open')" style="position:absolute;top:0;right:0">⌂ Hub</button>
+      <button class="hub-btn" onclick="document.getElementById('mod-gamemode').classList.add('open')" style="position:absolute;top:0;right:0"> ⌂ Hub</button>
       <div class="setup-suits">🎯</div>
       <div class="setup-title">Indian Rummy Stake</div>
       <div class="setup-sub">Points × Stake Value — settle anytime</div>
@@ -1114,7 +1123,7 @@ table.mt tbody tr:hover td{background:rgba(240,192,96,.03);}
 
     <!-- Header -->
     <div class="setup-hero" style="padding:24px 16px 16px;position:relative">
-      <button class="btn btn-sm hub-btn" onclick="selectMode('back')" style="position:absolute;top:16px;right:16px">⌂ Hub</button>
+      <button class="hub-btn" onclick="selectMode('back')" style="position:absolute;top:16px;right:16px"> ⌂ Hub</button>
       <div class="setup-suits">🪙</div>
       <div class="setup-title">Chip Settlement</div>
       <div class="setup-sub">Enter chip counts · Track history · Settle with minimum transactions</div>
@@ -1257,14 +1266,14 @@ table.mt tbody tr:hover td{background:rgba(240,192,96,.03);}
 <div id="toast" class="toast"></div>
 
 <!-- ═══════════ HEADER ═══════════ -->
-<div class="header">
+<div class="header hidden" id="rummy-header">
   <div class="logo">
     <span class="logo-suits">♠ ♥ ♦ ♣</span>
     <span>Rummy</span>
   </div>
   <div class="hpills" id="hpills"></div>
   <div class="hacts" id="hacts"></div>
-  <button class="btn btn-sm hub-btn" onclick="goBackToHub()" title="Back to Game Hub">⌂ Hub</button>
+  <button class="hub-btn" onclick="goBackToHub()" title="Back to Game Hub"> ⌂ Hub</button>
 </div>
 
 <!-- ═══════════ SETUP ═══════════ -->
@@ -1605,6 +1614,12 @@ function startGame(){
 function switchScreen(id){
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
   document.getElementById(id).classList.add('active');
+  // Only show the Rummy header on Rummy Pool screens
+  const header=document.getElementById('rummy-header');
+  if(header){
+    const isRummy=id==='scr-setup'||id==='scr-game';
+    header.classList.toggle('hidden',!isRummy);
+  }
 }
 
 function getActive(){return G.players.filter(p=>!G.eliminated[p.abbr]);}
