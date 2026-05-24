@@ -981,8 +981,8 @@ table.mt tbody tr:hover td{background:rgba(240,192,96,.03);}
       <!-- Chip Calculator -->
       <div class="mode-card" onclick="selectMode('chips')">
         <div class="mode-icon">🪙</div>
-        <div class="mode-title">Chip Calculator</div>
-        <div class="mode-desc">Enter chip counts per player · Auto-settle with min transactions</div>
+        <div class="mode-title">Poker Session</div>
+        <div class="mode-desc">Track chip counts · Who won / lost · Settle with minimum transactions</div>
         <div class="mode-tag" style="background:rgba(56,200,120,.15);color:var(--green);border-color:rgba(56,200,120,.3)">New</div>
       </div>
     </div>
@@ -1125,7 +1125,7 @@ table.mt tbody tr:hover td{background:rgba(240,192,96,.03);}
     <div class="setup-hero" style="padding:24px 16px 16px;position:relative">
       <button class="hub-btn" onclick="selectMode('back')" style="position:absolute;top:16px;right:16px"> ⌂ Hub</button>
       <div class="setup-suits">🪙</div>
-      <div class="setup-title">Chip Settlement</div>
+      <div class="setup-title">Poker Session</div>
       <div class="setup-sub">Enter chip counts · Track history · Settle with minimum transactions</div>
     </div>
 
@@ -1711,8 +1711,10 @@ function renderTable(){
 
   /* THEAD */
   let h='<thead><tr><th><div class="thi" style="color:var(--text3);font-size:10px;font-family:\'Fira Code\',monospace">ROUND</div></th>';
-  // Pre-compute whether reinstate is currently eligible (all active have >= 1 drop)
-  const allActiveHaveDrop=getActive().every(q=>(cfg.final-1-getCum(q.abbr))>=cfg.drop);
+  // Reinstate allowed only when: game NOT over, ≥2 active players remain, ALL have ≥1 drop
+  const canReinstate=!G.gameOver
+    && active.length>=2
+    && active.every(q=>(cfg.final-1-getCum(q.abbr))>=cfg.drop);
 
   players.forEach(p=>{
     const cum=getCum(p.abbr);
@@ -1720,7 +1722,7 @@ function renderTable(){
     const hasRE=!!G.reentry[p.abbr];
     const isDeclined=!!(G.declinedReentry&&G.declinedReentry[p.abbr]);
     // Show Reinstate only if: player was declined AND all active players have ≥ 1 drop
-    const showReinstate=isDeclined&&allActiveHaveDrop;
+    const showReinstate=isDeclined&&canReinstate;
     const cc=cumClass(cum,cfg,isOut);
     const rem=cfg.final-1-cum;
     const dropsLeft=Math.max(0,Math.floor(rem/cfg.drop));
@@ -1861,9 +1863,27 @@ const scoreTypeMap={};
 
 function setQ(abbr,type){
   const inp=document.getElementById('inp-'+abbr);if(!inp)return;
+
+  // Block WS if another player already has Rummy (R=0) selected
+  if(type==='WS'){
+    const active=getActive();
+    const rummyPlayer=active.find(p=>{
+      if(p.abbr===abbr)return false;
+      const pi=document.getElementById('inp-'+p.abbr);
+      return pi&&pi.value==='0';
+    });
+    if(rummyPlayer){
+      showErr('err-round',`Wrong Show is not valid — ${rummyPlayer.abbr} already declared Rummy this round!`);
+      inp.classList.add('ierr');
+      setTimeout(()=>{inp.classList.remove('ierr');hideErr('err-round');},3000);
+      return;
+    }
+  }
+
   inp.value={D:G.cfg.drop,MD:G.cfg.mid,FC:G.cfg.full,WS:G.cfg.ws,R:0}[type];
   inp.classList.remove('ierr');
-  scoreTypeMap[abbr]=type; // remember which button was pressed
+  hideErr('err-round');
+  scoreTypeMap[abbr]=type;
   const fl=document.getElementById('fl-'+abbr);
   if(fl){
     fl.textContent=FUNNY[type][Math.floor(Math.random()*FUNNY[type].length)];
@@ -1875,7 +1895,21 @@ function setQ(abbr,type){
 function onScoreInput(abbr,inp){
   inp.classList.remove('ierr');
   hideErr('err-round');
-  delete scoreTypeMap[abbr]; // manual entry — no type assigned
+  delete scoreTypeMap[abbr];
+  // If user typed the WS value manually, check no Rummy already selected
+  const val=Number(inp.value);
+  if(val===G.cfg.ws&&G.cfg.ws!==G.cfg.full){
+    const active=getActive();
+    const rummyPlayer=active.find(p=>{
+      if(p.abbr===abbr)return false;
+      const pi=document.getElementById('inp-'+p.abbr);
+      return pi&&pi.value==='0';
+    });
+    if(rummyPlayer){
+      inp.classList.add('ierr');
+      showErr('err-round',`Wrong Show is not valid — ${rummyPlayer.abbr} already declared Rummy this round!`);
+    }
+  }
   updateRummyIndicator();
 }
 
@@ -1963,6 +1997,11 @@ function submitRound(){
   if(hasErr){showErr('err-round',errMsg);return;}
   if(zeroCount===0){showErr('err-round','Every round must have exactly one Rummy (R=0). No Rummy selected!');return;}
   if(zeroCount>1){showErr('err-round','Only one player can score 0 (Rummy) per round!');return;}
+  // Check no WS in same round as a Rummy winner
+  const wsPlayers=active.filter(p=>scores[p.abbr]===G.cfg.ws&&scoreTypeMap[p.abbr]==='WS');
+  if(wsPlayers.length>0&&zeroCount===1){
+    showErr('err-round',`Wrong Show (${wsPlayers.map(p=>p.abbr).join(', ')}) cannot be used when a Rummy winner exists this round!`);return;
+  }
 
   // All valid — show confirm modal
   pendingScores=scores;
@@ -2041,16 +2080,18 @@ function processReentry(idx){
   const cum=getCum(player.abbr);
   const cfg=G.cfg;
 
-  /* Rule: ALL other remaining active players must have ≥ 1 drop of room.
-     Exclude: already eliminated + others in the current crossed queue
-     (they haven't been decided yet, treat them as potentially out for this check) */
+  /* Rule: at least 1 other active player must remain (so game has ≥2 players)
+     AND all others must have ≥ 1 drop of room */
   const queueAbbrs=new Set(reentryQueue.map(p=>p.abbr));
   const others=getActive().filter(q=>
     q.abbr!==player.abbr &&
     !G.eliminated[q.abbr] &&
-    !queueAbbrs.has(q.abbr)  // exclude other players also in reentry queue
+    !queueAbbrs.has(q.abbr)
   );
-  const canReenter=others.length>0&&others.every(q=>(cfg.final-1-getCum(q.abbr))>=cfg.drop);
+  // Re-entry requires AT LEAST 2 other active players remaining.
+  // This ensures: if declined, still ≥2 active players left for a valid game.
+  // If only 1 other player remains, declining ends the game — no re-entry offered.
+  const canReenter=others.length>=2&&others.every(q=>(cfg.final-1-getCum(q.abbr))>=cfg.drop);
   const blockers=others.filter(q=>(cfg.final-1-getCum(q.abbr))<cfg.drop);
   const maxScore=others.length>0?Math.max(...others.map(q=>getCum(q.abbr))):cum;
 
@@ -2082,8 +2123,13 @@ function processReentry(idx){
       All other players have ≥ ${cfg.drop} pts of room —
       <strong style="color:var(--green)">re-entry permitted</strong>.`;
     btn.disabled=false;btn.style.opacity='1';
-    // When reinstate IS possible after decline, label the button accordingly
-    btnDecline.textContent='Decline — Player Out (can reinstate later)';
+    const reinstateAfterDecline=others.length>=2&&others.every(q=>(cfg.final-1-getCum(q.abbr))>=cfg.drop);
+    if(!reinstateAfterDecline){
+      html+=`<br><br><div class="warn-box">⚠ If you decline, only <strong>${others.length} player${others.length!==1?'s':''}</strong> will remain active — <strong>no reinstate</strong> will be available.</div>`;
+    }
+    btnDecline.textContent=reinstateAfterDecline
+      ?'Decline — Player Out (can reinstate later)'
+      :'Confirm Out — No Reinstate Available';
   } else {
     // Identify whether blockers have zero drops (no drops left) or just insufficient room
     const zeroDropBlockers=blockers.filter(q=>Math.floor((cfg.final-1-getCum(q.abbr))/cfg.drop)===0);
@@ -2119,28 +2165,29 @@ function declineReentry(){
   G.declinedReentry[player.abbr]=true;
   pendingReentry=null;
   document.getElementById('mod-reentry').classList.remove('open');
-  // Only hint about reinstate if all remaining active players have >= 1 drop
+  // Only hint about reinstate if ≥2 active players remain and all have >= 1 drop
   const cfg=G.cfg;
-  const allHaveDrop=getActive().every(q=>(cfg.final-1-getCum(q.abbr))>=cfg.drop);
-  toast(`${player.abbr} is OUT! 💀${allHaveDrop?' — Reinstate button available if needed':''}`, 'red');
+  const remaining=getActive();
+  const canShowReinstate=remaining.length>=2&&remaining.every(q=>(cfg.final-1-getCum(q.abbr))>=cfg.drop);
+  toast(`${player.abbr} is OUT! 💀${canShowReinstate?' — Reinstate button available if needed':''}`, 'red');
   processReentry(idx+1);
 }
 
 function reinstatePlayer(abbr){
   if(!G.declinedReentry||!G.declinedReentry[abbr])return;
   const cfg=G.cfg;
-  // Guard: only proceed if all active players have >= 1 drop
-  const allHaveDrop=getActive().every(q=>(cfg.final-1-getCum(q.abbr))>=cfg.drop);
+  // Guard: at least 2 active players must remain AND all have >= 1 drop AND game not over
+  const active=getActive();
+  const allHaveDrop=!G.gameOver&&active.length>=2&&active.every(q=>(cfg.final-1-getCum(q.abbr))>=cfg.drop);
   if(!allHaveDrop){
-    // Button should not be visible in this case, but guard anyway
-    toast('Reinstate not available — a player has no drops left','red');
+    toast('Reinstate not available — need at least 2 active players with drops remaining','red');
     return;
   }
   const player=G.players.find(p=>p.abbr===abbr);
   if(!player)return;
   const cum=getCum(abbr);
   const others=getActive().filter(q=>q.abbr!==abbr);
-  const canReenter=others.length>0&&others.every(q=>(cfg.final-1-getCum(q.abbr))>=cfg.drop);
+  const canReenter=others.length>=1&&others.every(q=>(cfg.final-1-getCum(q.abbr))>=cfg.drop);
   const maxScore=others.length>0?Math.max(...others.map(q=>getCum(q.abbr))):cum;
   const blockers=others.filter(q=>(cfg.final-1-getCum(q.abbr))<cfg.drop);
 
@@ -2844,7 +2891,8 @@ function saveCurrentSession(){
   }));
   const session={
     id:Date.now(),
-    date:new Date().toLocaleString('en-IN',{day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}),
+    date:new Date().toISOString(),
+    type:'rummy',
     rounds,pot,expTotal:res.expTotal,players:playerData,
     cfg:{cash:cfg.cash,drop:cfg.drop,final:cfg.final}
   };
@@ -2864,31 +2912,38 @@ function openSessions(){
 function closeSessions(){document.getElementById('mod-sessions').classList.remove('open');}
 
 function renderSessionList(){
-  const rummySessions=loadSessions().map(s=>({...s,_type:s.type||'rummy'}));
+  // All three types: rummy+stake share SESSIONS_KEY, chips use CC_SESSIONS_KEY
+  const rummyAndStake=loadSessions().map(s=>({...s,_type:s.type||'rummy'}));
   const chipSessions=ccLoadSessions().map(s=>({...s,_type:'chips'}));
-  const allSessions=[...rummySessions,...chipSessions].sort((a,b)=>new Date(b.date)-new Date(a.date));
+  const allSessions=[...rummyAndStake,...chipSessions].sort((a,b)=>{
+    try{return new Date(b.date)-new Date(a.date);}catch{return 0;}
+  });
   const wrap=document.getElementById('session-list-wrap');
-  if(!allSessions.length){wrap.innerHTML='<div class="no-sessions">No saved sessions yet.<br>Complete a game to save sessions here.</div>';return;}
+  if(!allSessions.length){wrap.innerHTML='<div class="no-sessions">No saved sessions yet.<br>Complete a game and end it to save sessions here.</div>';return;}
   const typeIcon={rummy:'🃏',stake:'🎯',chips:'🪙'};
-  let h=`<div style="font-size:11px;color:var(--text3);margin-bottom:10px">${allSessions.length} session${allSessions.length!==1?'s':''} · Tap to select</div>`;
+  const typeLabel={rummy:'Rummy Pool',stake:'Rummy Stake',chips:'Poker Session'};
+  let h=`<div style="font-size:11px;color:var(--text3);margin-bottom:10px">${allSessions.length} session${allSessions.length!==1?'s':''} · Tap to select for combined settlement</div>`;
   allSessions.forEach(s=>{
     const isSel=selectedSessionIds.has(s.id+'_'+s._type);
     const icon=typeIcon[s._type]||'🃏';
-    const d=new Date(s.date);
-    const ds=d.toLocaleDateString('en-IN',{weekday:'short',day:'2-digit',month:'short',year:'numeric'});
+    const lbl=typeLabel[s._type]||'Rummy Pool';
+    let ds='';
+    try{const d=new Date(s.date);ds=d.toLocaleDateString('en-IN',{weekday:'short',day:'2-digit',month:'short',year:'numeric'})+' '+d.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});}catch{ds=s.date||'';}
     h+=`<div class="session-card${isSel?' selected':''}" onclick="toggleSession(${s.id},'${s._type}')">
       <div class="session-cb">${isSel?'✓':''}</div>
       <div style="flex:1">
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          <span style="font-size:14px">${icon}</span>
-          <span style="font-family:'Rajdhani',sans-serif;font-size:14px;font-weight:600;color:var(--text)">${ds}${s.venue?' · 📍'+s.venue:''}</span>
-          <span class="session-meta">${s.rounds||0} rounds · ${s.players.length} players</span>
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:2px">
+          <span style="font-size:15px">${icon}</span>
+          <span style="font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:700;color:var(--gold);text-transform:uppercase;letter-spacing:.04em">${lbl}</span>
+          <span class="session-meta">${ds}${s.venue?' · '+s.venue:''}</span>
         </div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:5px">${s.rounds||0} rounds · ${s.players.length} players${s.pot?' · $'+s.pot+' pot':''}</div>
         <div class="session-players">
           ${s.players.map(p=>{
             const nc=p.net>0?'snet-pos':p.net<0?'snet-neg':'snet-zero';
             const abbr=p.abbr||p.name;const ci=p.ci||0;
-            return `<span class="session-ptag pc${ci}">${abbr} <span class="${nc}">${p.net>=0?'+':''}\$${Math.round(p.net)}</span></span>`;
+            const netVal=typeof p.net==='number'?p.net:0;
+            return '<span class="session-ptag pc'+ci+'">'+abbr+' <span class="'+nc+'">'+(netVal>=0?'+':'')+'$'+Math.abs(netVal).toFixed(0)+'</span></span>';
           }).join('')}
         </div>
       </div></div>`;
@@ -2906,19 +2961,23 @@ function toggleSession(id,type){
 
 function computeCombined(){
   if(selectedSessionIds.size===0){toast('Select at least one session','red');return;}
-  const rummySessions=loadSessions().filter(s=>selectedSessionIds.has(s.id+'_'+(s.type||'rummy')));
-  const chipSessions=ccLoadSessions().filter(s=>selectedSessionIds.has(s.id+'_chips'));
-  const hasMixed=rummySessions.length>0&&chipSessions.length>0;
+  const allStored=loadSessions();
+  const selRummy=allStored.filter(s=>s.type!=='stake'&&selectedSessionIds.has(s.id+'_'+(s.type||'rummy')));
+  const selStake=allStored.filter(s=>s.type==='stake'&&selectedSessionIds.has(s.id+'_stake'));
+  const selChip=ccLoadSessions().filter(s=>selectedSessionIds.has(s.id+'_chips'));
+  const hasChip=selChip.length>0;
+  const hasRummyOrStake=(selRummy.length+selStake.length)>0;
+  const hasMixed=hasChip&&hasRummyOrStake;
   const wrap=document.getElementById('combined-settle-wrap');
   wrap.style.display='block';
   if(hasMixed){
-    const rDates=new Set(rummySessions.map(s=>new Date(s.date).toLocaleDateString()));
-    const cDates=new Set(chipSessions.map(s=>new Date(s.date).toLocaleDateString()));
-    const sameDay=[...rDates].some(d=>cDates.has(d));
+    const rsDates=new Set([...selRummy,...selStake].map(s=>{try{return new Date(s.date).toLocaleDateString();}catch{return '';}}));
+    const cDates=new Set(selChip.map(s=>{try{return new Date(s.date).toLocaleDateString();}catch{return '';}}));
+    const sameDay=[...rsDates].some(d=>d&&cDates.has(d));
     document.getElementById('combined-options-wrap').innerHTML=`
       <div style="background:rgba(200,150,10,.08);border:1px solid rgba(200,150,10,.25);border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:12px">
         <div style="font-size:13px;font-weight:600;color:var(--gold);margin-bottom:8px">
-          🃏 Rummy + 🪙 Chip sessions selected${sameDay?' (same day detected)':''} — how would you like to settle?
+          Mixed session types selected${sameDay?' — same day detected':''} — how would you like to settle?
         </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap">
           <button class="btn btn-teal" onclick="renderCombinedResult('separate')">Settle Separately</button>
@@ -2944,22 +3003,30 @@ function buildPlayerMap(sessions){
 }
 
 function renderCombinedResult(mode){
-  const rummySessions=loadSessions().filter(s=>selectedSessionIds.has(s.id+'_'+(s.type||'rummy')));
-  const chipSessions=ccLoadSessions().filter(s=>selectedSessionIds.has(s.id+'_chips'));
+  const allStored=loadSessions();
+  const selRummy=allStored.filter(s=>s.type!=='stake'&&selectedSessionIds.has(s.id+'_'+(s.type||'rummy')));
+  const selStake=allStored.filter(s=>s.type==='stake'&&selectedSessionIds.has(s.id+'_stake'));
+  const selChip=ccLoadSessions().filter(s=>selectedSessionIds.has(s.id+'_chips'));
   const area=document.getElementById('combined-result-area');
   let html='';
   if(mode==='separate'){
-    if(rummySessions.length>0){
-      html+='<div style="font-family:Rajdhani,sans-serif;font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--gold);margin-bottom:8px">🃏 Rummy Settlement</div>';
-      html+=renderPayBlock(buildPlayerMap(rummySessions));
+    if(selRummy.length>0){
+      html+='<div style="font-family:Rajdhani,sans-serif;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--gold);margin-bottom:8px">🃏 Rummy Pool</div>';
+      html+=renderPayBlock(buildPlayerMap(selRummy));
     }
-    if(chipSessions.length>0){
-      html+='<div style="font-family:Rajdhani,sans-serif;font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--teal);margin:14px 0 8px">🪙 Chip Settlement</div>';
-      html+=renderPayBlock(buildPlayerMap(chipSessions));
+    if(selStake.length>0){
+      html+='<div style="font-family:Rajdhani,sans-serif;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--purple);margin:14px 0 8px">🎯 Rummy Stake</div>';
+      html+=renderPayBlock(buildPlayerMap(selStake));
+    }
+    if(selChip.length>0){
+      html+='<div style="font-family:Rajdhani,sans-serif;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--teal);margin:14px 0 8px">🪙 Poker Session</div>';
+      html+=renderPayBlock(buildPlayerMap(selChip));
     }
   } else {
-    const allPlayers=buildPlayerMap([...rummySessions,...chipSessions]);
-    html+='<div style="font-family:Rajdhani,sans-serif;font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--teal);margin-bottom:8px">Combined Settlement</div>';
+    const allSelected=[...selRummy,...selStake,...selChip];
+    const allPlayers=buildPlayerMap(allSelected);
+    const icons=[selRummy.length>0?'🃏':null,selStake.length>0?'🎯':null,selChip.length>0?'🪙':null].filter(Boolean).join(' + ');
+    html+='<div style="font-family:Rajdhani,sans-serif;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--teal);margin-bottom:8px">'+icons+' Combined ('+allSelected.length+' session'+(allSelected.length!==1?'s':'')+')</div>';
     html+=renderPayBlock(allPlayers);
   }
   area.innerHTML=html;
@@ -3094,10 +3161,17 @@ function ccBuildPlayers(){
   const n=+document.getElementById('cc-num-players').value;
   const s=+document.getElementById('cc-start-chips').value||250;
   const prev=ccPlayers;
-  ccPlayers=Array.from({length:n},(_,i)=>({
-    name:(prev[i]&&prev[i].name)||CC_NAMES[i]||'P'+(i+1),
-    start:s,end:(prev[i]&&prev[i].end!=null)?prev[i].end:s,c:CC_PAL[i%CC_PAL.length]
-  }));
+  // Build used names from previous selection to preserve choices
+  const used=new Set();
+  ccPlayers=Array.from({length:n},(_,i)=>{
+    let name=(prev[i]&&prev[i].name)||'';
+    // If name already used by a previous slot, pick next available
+    if(!name||used.has(name)){
+      name=CC_NAMES.find(nm=>!used.has(nm))||CC_NAMES[i%CC_NAMES.length];
+    }
+    used.add(name);
+    return{name,start:s,end:(prev[i]&&prev[i].end!=null)?prev[i].end:s,c:ccPalFor(name)};
+  });
   ccRenderPlayers();ccLiveAudit();
   document.getElementById('cc-results').style.display='none';
 }
@@ -3105,11 +3179,15 @@ function ccBuildPlayers(){
 function ccRenderPlayers(){
   const grid=document.getElementById('cc-pgrid');
   if(!grid)return;
+  // Build set of names used by OTHER players (not current index)
   grid.innerHTML=ccPlayers.map((p,i)=>{
     const diff=p.end-p.start;
     const nc=diff>0?'cc-net-win':diff<0?'cc-net-lose':'cc-net-even';
     const netCol=diff>0?'var(--green)':diff<0?'var(--red)':'var(--text3)';
-    const opts=CC_NAMES.map(n=>`<option value="${n}"${n===p.name?' selected':''}>${n}</option>`).join('');
+    // Exclude names already picked by other players
+    const usedByOthers=new Set(ccPlayers.filter((_,j)=>j!==i).map(q=>q.name));
+    const opts=CC_NAMES.filter(n=>n===p.name||!usedByOthers.has(n))
+      .map(n=>`<option value="${n}"${n===p.name?' selected':''}>${n}</option>`).join('');
     return `<div class="cc-pcard">
       <div class="cc-pcard-top" style="background:${p.c.dot}"></div>
       <div class="cc-pcard-body">
