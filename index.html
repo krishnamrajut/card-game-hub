@@ -941,17 +941,17 @@ table.mt tbody tr:hover td{background:rgba(240,192,96,.03);}
 <!-- ═══════════ MULTI-SESSION MODAL ═══════════ -->
 <div class="mov" id="mod-sessions">
   <div class="modal" style="max-width:680px">
-    <div class="modal-title">📋 Session History</div>
-    <div class="modal-sub">Select sessions to combine. 🃏 = Rummy · 🎯 = Stake · 🪙 = Chip. Mixed types settle at 1 chip = $1.</div>
+    <div class="modal-title">📋 Past Sessions</div>
+    <div class="modal-sub">All sessions loaded below. Deselect any to exclude from settlement. 🃏 Rummy · 🎯 Stake · 🪙 Poker</div>
     <div id="session-list-wrap"></div>
-    <div id="combined-settle-wrap" style="display:none">
+    <div id="combined-settle-wrap">
       <div style="height:1px;background:var(--bdr2);margin:16px 0"></div>
       <div id="combined-options-wrap"></div>
     </div>
     <div class="mfoot">
       <button class="btn" onclick="closeSessions()">Close</button>
       <button class="btn btn-red btn-sm" onclick="clearAllSessions()" style="margin-right:auto">🗑 Clear All</button>
-      <button class="btn btn-gold" onclick="computeCombined()">Combine Selected ✓</button>
+      <button class="btn btn-gold" onclick="computeCombined()">↻ Recalculate</button>
     </div>
   </div>
 </div>
@@ -1232,6 +1232,32 @@ table.mt tbody tr:hover td{background:rgba(240,192,96,.03);}
   </div>
 </div>
 
+<!-- ═══════════ EDIT SETTINGS MODAL ═══════════ -->
+<div class="mov" id="mod-edit-settings">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-title">⚙ Edit Game Settings</div>
+    <div class="modal-sub">Changes apply immediately. Players are re-checked against the new out limit. Quick-entry buttons (D, MD, FC) will use the new values.</div>
+    <div class="sgrid" style="margin-top:12px">
+      <div class="field"><label>Drop Score (D)</label>
+        <input type="number" id="es-drop" min="1" style="width:100%"></div>
+      <div class="field"><label>Middle Drop (MD)</label>
+        <input type="number" id="es-mid" min="1" style="width:100%"></div>
+      <div class="field"><label>Full Count / Max (FC)</label>
+        <input type="number" id="es-full" min="1" style="width:100%"></div>
+      <div class="field"><label>Wrong Show (WS)</label>
+        <input type="number" id="es-ws" min="1" style="width:100%"></div>
+      <div class="field"><label>Out Limit (≥)</label>
+        <input type="number" id="es-final" min="1" style="width:100%"></div>
+    </div>
+    <div class="err" id="es-err"></div>
+    <div class="mfoot">
+      <button class="btn" onclick="closeEditSettings()">Cancel</button>
+      <button class="btn btn-gold" onclick="saveEditSettings()">Save Settings</button>
+    </div>
+  </div>
+</div>
+
+
 <div id="scr-pin" class="pin-overlay" style="display:none">
   <div class="pin-card">
     <div class="pin-logo">♠♥♦♣</div>
@@ -1260,7 +1286,7 @@ table.mt tbody tr:hover td{background:rgba(240,192,96,.03);}
     </div>
     <button class="pin-forgot" id="pin-forgot-btn" onclick="pinForgot()">Forgot PIN?</button>
   </div>
-</div>
+</div><!-- /scr-pin -->
 
 <div class="app">
 <div id="toast" class="toast"></div>
@@ -1650,8 +1676,14 @@ function getRoundNum(ri){
   return n;
 }
 
-function cellClass(v,cfg){
+function cellClass(v,cfg,storedType){
   if(v===0)return'cv0';
+  // Use stored type if available — survives settings changes
+  if(storedType==='D')return'cv-d';
+  if(storedType==='MD')return'cv-md';
+  if(storedType==='FC')return'cv-fc';
+  if(storedType==='WS')return'cv-ws';
+  // Fallback: infer from current cfg values
   if(v===cfg.drop&&v!==cfg.mid&&v!==cfg.full)return'cv-d';
   if(v===cfg.mid&&v!==cfg.full)return'cv-md';
   if(v>=cfg.full)return'cv-fc';
@@ -1697,7 +1729,10 @@ function renderStatsBar(){
     <div class="spill">WS:<b>${G.cfg.ws}</b></div>
     <div class="spill">Out:&nbsp;<b>≥${G.cfg.final}</b></div>
     <div class="spill">Round:<b>${n+1}</b></div>
-    <div class="spill pot">Pot:<b>$${pot}</b></div>`;
+    <div class="spill pot">Pot:<b>$${pot}</b></div>
+    <button class="btn btn-sm" onclick="openEditSettings()"
+      style="font-size:11px;padding:3px 10px;border-radius:12px;margin-left:4px"
+      title="Edit game settings">⚙ Settings</button>`;
 }
 
 /* ─── TABLE ─────────────────────────────────────────── */
@@ -1771,7 +1806,8 @@ function renderTable(){
     players.forEach(p=>{
       const v=r.scores&&r.scores[p.abbr]!==undefined?r.scores[p.abbr]:null;
       if(v===null){h+=`<td class="cv-dash">—</td>`;return;}
-      h+=`<td class="${cellClass(v,cfg)}">${v}</td>`;
+      const storedType=r.types&&r.types[p.abbr];
+      h+=`<td class="${cellClass(v,cfg,storedType)}">${v}</td>`;
     });
     h+='</tr>';
   });
@@ -2056,8 +2092,18 @@ function commitRound(){
 
   // Clear reinstate eligibility and score type tracking
   G.declinedReentry={};
+  // Save score types before clearing (D/MD/FC/WS/R/MANUAL per player)
+  const types={};
+  getActive().forEach(p=>{
+    const v=scores[p.abbr];const cfg=G.cfg;const qt=scoreTypeMap[p.abbr];
+    types[p.abbr]=qt||(
+      v===0?'R':v===cfg.drop&&v!==cfg.mid&&v!==cfg.full?'D':
+      v===cfg.mid&&v!==cfg.full?'MD':v>=cfg.full?'FC':
+      v===cfg.ws&&cfg.ws!==cfg.full?'WS':'MANUAL'
+    );
+  });
   Object.keys(scoreTypeMap).forEach(k=>delete scoreTypeMap[k]);
-  G.rounds.push({scores,reentryFor:null});
+  G.rounds.push({scores,types,reentryFor:null});
 
   /* Check who crossed the out limit */
   const active=getActive();
@@ -2865,7 +2911,73 @@ function confirmAddPlayer(){
   renderAll();
 }
 
-/* ─── MULTI-SESSION SYSTEM ──────────────────────────── */
+/* ─── EDIT SETTINGS MID-GAME ────────────────────────── */
+function openEditSettings(){
+  document.getElementById('es-drop').value=G.cfg.drop;
+  document.getElementById('es-mid').value=G.cfg.mid;
+  document.getElementById('es-full').value=G.cfg.full;
+  document.getElementById('es-ws').value=G.cfg.ws;
+  document.getElementById('es-final').value=G.cfg.final;
+  hideErr('es-err');
+  document.getElementById('mod-edit-settings').classList.add('open');
+}
+function closeEditSettings(){
+  document.getElementById('mod-edit-settings').classList.remove('open');
+}
+function saveEditSettings(){
+  const drop =+document.getElementById('es-drop').value;
+  const mid  =+document.getElementById('es-mid').value;
+  const full =+document.getElementById('es-full').value;
+  const ws   =+document.getElementById('es-ws').value;
+  const final_=+document.getElementById('es-final').value;
+  if([drop,mid,full,ws,final_].some(v=>!v||v<1)){
+    showErr('es-err','All values must be positive numbers.');return;
+  }
+  if(drop>mid||mid>full){
+    showErr('es-err','Drop ≤ Mid Drop ≤ Full Count expected.');return;
+  }
+
+  G.cfg.drop=drop;G.cfg.mid=mid;G.cfg.full=full;G.cfg.ws=ws;G.cfg.final=final_;
+
+  // Update existing round scores to match new setting values based on stored type
+  // e.g. if a player scored D when D=25, and D is now 24, update their score to 24
+  const typeToValue={'D':drop,'MD':mid,'FC':full,'WS':ws,'R':0};
+  G.rounds.forEach(r=>{
+    if(!r.scores||!r.types)return;
+    Object.keys(r.types).forEach(abbr=>{
+      const type=r.types[abbr];
+      if(type&&type!=='MANUAL'&&type!=='R'&&typeToValue[type]!==undefined){
+        r.scores[abbr]=typeToValue[type];
+      }
+    });
+  });
+
+  // Re-check all players against new out limit
+  const newlyOut=[];
+  G.players.forEach(p=>{
+    const cum=getCum(p.abbr);
+    if(!G.eliminated[p.abbr]&&cum>=final_){
+      G.eliminated[p.abbr]=true;newlyOut.push(p.abbr);
+    } else if(G.eliminated[p.abbr]&&cum<final_){
+      delete G.eliminated[p.abbr];
+    }
+  });
+
+  const active=getActive();
+  if(active.length<2&&!G.gameOver)G.gameOver=true;
+  else if(active.length>=2)G.gameOver=false;
+
+  closeEditSettings();
+  renderAll();
+
+  if(newlyOut.length>0){
+    toast(`Settings updated. ${newlyOut.join(', ')} now eliminated under new out limit.`,'amber');
+  } else {
+    toast('Settings updated ✓','teal');
+  }
+}
+
+
 const SESSIONS_KEY='rummy_sessions_v1';
 let selectedSessionIds=new Set();
 
@@ -2904,10 +3016,26 @@ function saveCurrentSession(){
 }
 
 function openSessions(){
-  selectedSessionIds=new Set();
-  document.getElementById('combined-settle-wrap').style.display='none';
-  renderSessionList();
+  // Auto-select ALL sessions from both stores
+  const rummyAndStake=loadSessions().map(s=>({...s,_type:s.type||'rummy'}));
+  const chipSessions=ccLoadSessions().map(s=>({...s,_type:'chips'}));
+  const all=[...rummyAndStake,...chipSessions];
+
+  selectedSessionIds=new Set(all.map(s=>s.id+'_'+s._type));
+
   document.getElementById('mod-sessions').classList.add('open');
+  renderSessionList();
+
+  // Auto-compute combined settlement immediately
+  if(all.length>0){
+    document.getElementById('combined-options-wrap').innerHTML='<div id="combined-result-area"></div>';
+    renderCombinedResult('combine');
+  } else {
+    document.getElementById('combined-options-wrap').innerHTML=
+      `<div style="text-align:center;color:var(--text3);font-size:13px;padding:20px 0">
+        No sessions saved yet. Complete a game and end it to save here.
+      </div>`;
+  }
 }
 function closeSessions(){document.getElementById('mod-sessions').classList.remove('open');}
 
@@ -2956,11 +3084,18 @@ function toggleSession(id,type){
   if(selectedSessionIds.has(key))selectedSessionIds.delete(key);
   else selectedSessionIds.add(key);
   renderSessionList();
-  document.getElementById('combined-settle-wrap').style.display='none';
+  // Auto-recompute
+  if(selectedSessionIds.size>0){
+    document.getElementById('combined-options-wrap').innerHTML='<div id="combined-result-area"></div>';
+    renderCombinedResult('combine');
+  } else {
+    document.getElementById('combined-options-wrap').innerHTML=
+      `<div style="text-align:center;color:var(--text3);font-size:13px;padding:16px 0">No sessions selected.</div>`;
+  }
 }
 
 function computeCombined(){
-  if(selectedSessionIds.size===0){toast('Select at least one session','red');return;}
+  if(selectedSessionIds.size===0){toast('No sessions selected','red');return;}
   const allStored=loadSessions();
   const selRummy=allStored.filter(s=>s.type!=='stake'&&selectedSessionIds.has(s.id+'_'+(s.type||'rummy')));
   const selStake=allStored.filter(s=>s.type==='stake'&&selectedSessionIds.has(s.id+'_stake'));
@@ -2968,8 +3103,7 @@ function computeCombined(){
   const hasChip=selChip.length>0;
   const hasRummyOrStake=(selRummy.length+selStake.length)>0;
   const hasMixed=hasChip&&hasRummyOrStake;
-  const wrap=document.getElementById('combined-settle-wrap');
-  wrap.style.display='block';
+
   if(hasMixed){
     const rsDates=new Set([...selRummy,...selStake].map(s=>{try{return new Date(s.date).toLocaleDateString();}catch{return '';}}));
     const cDates=new Set(selChip.map(s=>{try{return new Date(s.date).toLocaleDateString();}catch{return '';}}));
@@ -2989,7 +3123,6 @@ function computeCombined(){
     document.getElementById('combined-options-wrap').innerHTML='<div id="combined-result-area"></div>';
     renderCombinedResult('combine');
   }
-  wrap.scrollIntoView({behavior:'smooth',block:'nearest'});
 }
 
 function buildPlayerMap(sessions){
@@ -3072,11 +3205,13 @@ function renderPayBlock(players){
 }
 
 function clearAllSessions(){
-  if(!confirm('Delete ALL saved session history (Rummy + Chip)? Cannot be undone.'))return;
+  if(!confirm('Delete ALL saved session history (Rummy + Poker)? Cannot be undone.'))return;
   localStorage.removeItem(SESSIONS_KEY);ccSaveSessions([]);
   selectedSessionIds=new Set();
-  document.getElementById('combined-settle-wrap').style.display='none';
-  renderSessionList();toast('All session history cleared','amber');
+  renderSessionList();
+  document.getElementById('combined-options-wrap').innerHTML=
+    `<div style="text-align:center;color:var(--text3);font-size:13px;padding:20px 0">No sessions saved yet.</div>`;
+  toast('All session history cleared','amber');
 }
 
 function goBackToHub(){
