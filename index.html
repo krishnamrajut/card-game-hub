@@ -2491,54 +2491,113 @@ function computePayouts(){
   const share={};
   players.forEach(p=>{share[p.abbr]=0;});
 
-  /* ALGORITHM:
-     Each active player gets base $inc. Remaining distPot distributed by drops.
-     Per drop group:
-       - Single player or all equal score: floor(budget/n/inc)*inc each, remainder split equally
-       - Multiple players, different scores: same floor base, remainder → $5 tiebreak (lower score first) */
+  /* ALGORITHM (uses cfg.drop as chunk unit, not cfg.cash):
+     distRemaining = distPot - active players × cash
+     Distribute distRemaining in $drop chunks:
+       • Every active player gets 1 base chunk ($drop)
+       • Then 1 extra chunk per drop remaining
+       • Leftover chunks → $5 tiebreak (lower score first within same-drop group)
+       • Equal score in same-drop group → split equally */
 
-  activePlayers.forEach(p=>{share[p.abbr]=inc;});
+  activePlayers.forEach(p=>{share[p.abbr]=inc;}); // base = cash (buy-in back)
   const distRemaining=distPot-activePlayers.length*inc;
+  const CHUNK=cfg.drop; // $drop is the distribution unit
 
-  if(distRemaining>0){
-    const withDrops=activePlayers.filter(p=>drops[p.abbr]>0)
-      .sort((a,b)=>drops[b.abbr]-drops[a.abbr]||getCum(a.abbr)-getCum(b.abbr));
-    const totalDrops2=withDrops.reduce((s,p)=>s+drops[p.abbr],0);
+  if(distRemaining>0&&CHUNK>0){
+    // Total chunks to distribute
+    const totalChunks=Math.floor(distRemaining/CHUNK);
+    const subChunk=distRemaining-totalChunks*CHUNK; // sub-chunk remainder (rare)
 
-    if(withDrops.length>0&&totalDrops2>0){
-      // Group by drop count
-      const dGroups={};
-      withDrops.forEach(p=>{
-        if(!dGroups[drops[p.abbr]])dGroups[drops[p.abbr]]=[];
-        dGroups[drops[p.abbr]].push(p);
+    // Each active player gets 1 base chunk + their drops extra chunks
+    // Effective "weight" per player = 1 + drops[p]
+    const weight={};
+    activePlayers.forEach(p=>{weight[p.abbr]=1+drops[p.abbr];});
+    const totalWeight=activePlayers.reduce((s,p)=>s+weight[p.abbr],0);
+
+    // Award floor(weight/totalWeight * totalChunks) chunks to each player
+    const flooredChunks={};
+    activePlayers.forEach(p=>{
+      flooredChunks[p.abbr]=Math.floor(weight[p.abbr]/totalWeight*totalChunks);
+      share[p.abbr]+=flooredChunks[p.abbr]*CHUNK;
+    });
+
+    // Leftover chunks after flooring
+    let leftover=totalChunks-activePlayers.reduce((s,p)=>s+flooredChunks[p.abbr],0);
+
+    // Award leftover chunks: sorted by (drops desc, score asc)
+    // BUT within same-weight group (same drops), give equal chunks first, then $5 tiebreak
+    if(leftover>0){
+      // Group by weight (= 1+drops, so same drops = same weight)
+      const wGroups={};
+      activePlayers.forEach(p=>{
+        const w=weight[p.abbr];
+        if(!wGroups[w])wGroups[w]=[];
+        wGroups[w].push(p);
       });
 
-      for(const d of Object.keys(dGroups).map(Number).sort((a,b)=>b-a)){
-        const grp=dGroups[d];
-        const grpDrops=grp.reduce((s,p)=>s+drops[p.abbr],0);
-        const rawBudget=grpDrops/totalDrops2*distRemaining;
+      // Distribute leftover chunks to highest-weight groups first
+      for(const w of Object.keys(wGroups).map(Number).sort((a,b)=>b-a)){
+        if(leftover<=0)break;
+        const grp=wGroups[w].sort((a,b)=>getCum(a.abbr)-getCum(b.abbr));
         const allSameScore=grp.every(p=>getCum(p.abbr)===getCum(grp[0].abbr));
 
-        // Per-player base: floor of equal split in $inc units
-        const perPlayer=Math.floor(rawBudget/(grp.length*inc))*inc;
-        grp.forEach(p=>share[p.abbr]+=perPlayer);
-        const groupRem=Math.round((rawBudget-perPlayer*grp.length)*100)/100;
-
-        if(groupRem<0.001)continue;
-
-        if(grp.length===1||allSameScore){
-          // Equal split of remainder (may be non-$5 for perfect ties e.g. $37.50)
-          const each=Math.round(groupRem/grp.length*100)/100;
-          grp.forEach(p=>share[p.abbr]+=each);
-        } else {
-          // $5 tiebreak: cycle lower score first
-          let fc=Math.floor(groupRem/SPLIT),idx=0;
-          while(fc>0){
-            share[grp[idx%grp.length].abbr]+=SPLIT;fc--;idx++;
+        // How many chunks can this group absorb?
+        const canTake=Math.min(leftover,grp.length);
+        if(allSameScore){
+          // Give 1 chunk to each member equally — only if we have enough for all
+          if(canTake===grp.length){
+            grp.forEach(p=>{share[p.abbr]+=CHUNK;leftover--;});
+          } else {
+            // Can't split equally — leave for $5 tiebreak below
+            break;
           }
-          const lo=Math.round((groupRem-Math.floor(groupRem/SPLIT)*SPLIT)*100)/100;
-          if(lo>0.001)share[grp[0].abbr]+=lo;
+        } else {
+          // Different scores, same weight: only give if enough for all members
+          // Otherwise leave for $5 tiebreak to differentiate properly
+          if(canTake===grp.length){
+            grp.forEach(p=>{share[p.abbr]+=CHUNK;leftover--;});
+          } else {
+            // Not enough chunks for everyone in group → $5 tiebreak
+            break;
+          }
         }
+      }
+    }
+
+    // $5 tiebreak for any remaining leftover chunks or sub-chunk
+    const tiebreakPool=leftover*CHUNK+subChunk;
+    if(tiebreakPool>0.001){
+      // Only give tiebreak to players in the highest-weight group that still has leftover
+      // (they couldn't get equal chunks, so $5 differentiates by score)
+      const wGroups2={};
+      activePlayers.forEach(p=>{
+        const w=weight[p.abbr];
+        if(!wGroups2[w])wGroups2[w]=[];
+        wGroups2[w].push(p);
+      });
+      const topWeight=Math.max(...Object.keys(wGroups2).map(Number));
+      // Find highest weight group that still has leftover budget
+      // The blocked group is the one we broke out of
+      let tbGroup=null;
+      for(const w of Object.keys(wGroups2).map(Number).sort((a,b)=>b-a)){
+        const grp=wGroups2[w];
+        // If leftover < group.length, this is the blocked group
+        if(leftover<grp.length){tbGroup=grp.sort((a,b)=>getCum(a.abbr)-getCum(b.abbr));break;}
+        if(leftover===0)break;
+      }
+      const pool=tbGroup||[...activePlayers].sort((a,b)=>drops[b.abbr]-drops[a.abbr]||getCum(a.abbr)-getCum(b.abbr));
+
+      const allEqual=pool.every(p=>
+        drops[p.abbr]===drops[pool[0].abbr]&&getCum(p.abbr)===getCum(pool[0].abbr)
+      );
+      if(allEqual){
+        const each=Math.round(tiebreakPool/pool.length*100)/100;
+        pool.forEach(p=>share[p.abbr]+=each);
+      } else {
+        let fc=Math.floor(tiebreakPool/SPLIT),idx=0;
+        while(fc>0){share[pool[idx%pool.length].abbr]+=SPLIT;fc--;idx++;}
+        const lo=Math.round((tiebreakPool-Math.floor(tiebreakPool/SPLIT)*SPLIT)*100)/100;
+        if(lo>0.001)share[pool[0].abbr]+=lo;
       }
     }
   }
